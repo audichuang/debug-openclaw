@@ -12,6 +12,10 @@ When investigating a specific symptom, go to the matching section. Each section 
 * [Browser Automation Broken](#browser-automation-broken)
 * [Channel Disconnected](#channel-disconnected)
 * [Config Not Taking Effect](#config-not-taking-effect)
+* [Event Queue Blocking / Lane Congestion](#event-queue-blocking--lane-congestion)
+* [Subagent Blocking Main Lane](#subagent-blocking-main-lane)
+* [Model Fallback Not Working](#model-fallback-not-working)
+* [Doctor Errors and Warnings](#doctor-errors-and-warnings)
 
 ***
 
@@ -156,3 +160,98 @@ When investigating a specific symptom, go to the matching section. Each section 
 6. Check `~/.openclaw/config-audit.jsonl` — every config write is logged here with before/after
 
 **Common issue:** Multiple config files exist (legacy migration). The resolution logic checks multiple paths. Read `resolveConfigPath()` to see exactly which file wins.
+
+***
+
+## Event Queue Blocking / Lane Congestion
+
+**Symptom:** Messages drop with `DiscordMessageListener timed out after 30000ms` or `Slow listener detected`. Bot appears stuck / typing but never responds.
+
+**Root cause:** OpenClaw's main lane is shared — one slow session blocks ALL other channels. The `DiscordMessageListener` has a 30-second hard timeout; exceeded = message silently dropped.
+
+➜ **Read [lane-diagnostics.md](lane-diagnostics.md#event-queue-blocking--lane-congestion)** for full diagnosis steps, command benchmarks, common causes, and resolution strategies.
+
+***
+
+## Subagent Blocking Main Lane
+
+**Symptom:** Same as above, but caused by subagent announce retries. You see `Subagent announce ... retrying N/4 ... gateway timeout after 60000ms` — each cycle = 60s blocking, 4 retries = 240+ seconds.
+
+**Key:** Subagent model (`agents.defaults.subagents.model`) is separate from session model. Discord `/models` command does NOT change the subagent model.
+
+➜ **Read [lane-diagnostics.md](lane-diagnostics.md#subagent-blocking-main-lane)** for diagnosis and config fix.
+
+***
+
+## Model Fallback Not Working
+
+**Symptom:** Primary model fails but agent doesn't fall back. You see `FailoverError` wrapping the primary model's error, or `Unknown model: <provider>/<model>` in logs.
+
+**Quick check:** Are fallbacks from multiple providers? Is each provider authenticated? Is each model ID registered?
+
+➜ **Read [lane-diagnostics.md](lane-diagnostics.md#model-fallback-not-working)** for full misconfiguration patterns and diagnostic commands.
+
+***
+
+## Doctor Errors and Warnings
+
+**Symptom:** `openclaw doctor` reports errors, warnings, or migration notices. Or other commands say "please run `openclaw doctor` first."
+
+**CLI flags:**
+
+```bash
+openclaw doctor                    # Interactive mode (prompts for repairs)
+openclaw doctor --repair           # Auto-apply recommended fixes without prompting
+openclaw doctor --repair --force   # Aggressive: overwrites custom supervisor configs too
+openclaw doctor --deep             # Scan for extra gateway installs (launchd/systemd)
+openclaw doctor --yes              # Accept all default prompts
+openclaw doctor --non-interactive  # Only safe migrations, skip restart/service actions
+```
+
+**What doctor checks (19 steps in order):**
+
+| # | Check | What it means if it warns |
+|---|-------|--------------------------|
+| 1 | Config normalization | Legacy config shapes found, doctor will auto-migrate |
+| 2 | Legacy config key migrations | Deprecated keys → `run doctor` to migrate (e.g. `routing.*` → `channels.*`) |
+| 3 | Legacy state migrations | Old disk layout → sessions/agent dirs need moving |
+| 4 | State integrity | State dir missing, permissions wrong, transcript files orphaned |
+| 5 | Model auth health | OAuth tokens expired/expiring, auth profiles in cooldown/disabled |
+| 6 | Hooks model validation | `hooks.gmail.model` references invalid model |
+| 7 | Sandbox image repair | Docker image missing for sandbox mode |
+| 8 | Gateway service migrations | Legacy launchd/systemd service → needs update |
+| 9 | Security warnings | DM policy open without allowlist |
+| 10 | systemd linger | Linux: linger not enabled → gateway dies after logout |
+| 11 | Skills status | Skills blocked/missing/eligibility issues |
+| 12 | Gateway auth | No `gateway.auth.token` set (offers to generate) |
+| 13 | Gateway health + restart | Gateway unhealthy → offers restart |
+| 14 | Channel status | Channels disconnected/errored |
+| 15 | Supervisor config audit | systemd/launchd config outdated (e.g. missing restart delay) |
+| 16 | Gateway runtime + port | Service installed but not running, port 18789 collision |
+| 17 | Runtime best practices | Running on Bun instead of Node, or version-manager path (nvm/fnm) |
+| 18 | Config write | Persists changes and stamps wizard metadata |
+| 19 | Workspace tips | Memory system missing, workspace not under git |
+
+**Common doctor-reported issues and fixes:**
+
+| Issue | What to do |
+|-------|-----------|
+| `legacy config keys found` | Let doctor auto-migrate, or manually update `openclaw.json` per the migration map |
+| `OAuth token expired` | Run interactively to refresh, or `openclaw models auth add --provider <name>` |
+| `auth profile in cooldown` | Wait for cooldown to expire, or check if API key/billing is valid |
+| `state dir permissions` | `chmod 700 ~/.openclaw` + `chmod 600 ~/.openclaw/openclaw.json` |
+| `systemd linger not enabled` | `loginctl enable-linger $(whoami)` |
+| `gateway service not running` | `systemctl --user start openclaw-gateway` |
+| `supervisor config outdated` | Run `openclaw doctor --repair` or `openclaw gateway install --force` |
+| `port 18789 in use` | `lsof -i :18789` to find the conflicting process |
+| `nvm/fnm path detected` | Doctor may suggest migrating to system Node to avoid path issues after upgrades |
+| `service file overwritten` | **⚠️ `openclaw doctor` can overwrite your `.service` file!** Always use `override.conf` for customizations |
+
+**⚠️ Important caveat:** `openclaw doctor --repair` and `--force` can overwrite the systemd service file at `~/.config/systemd/user/openclaw-gateway.service`. If you have custom `EnvironmentFile=` or other settings, **always** put them in `override.conf` (see [cli-reference.md](cli-reference.md#systemd-service-files)).
+
+**Deep troubleshooting:** For full details, read the local docs source:
+- **Doctor internals:** `~/github/openclaw/docs/gateway/doctor.md` (284 lines, all 19 check steps explained)
+- **Troubleshooting triage:** `~/github/openclaw/docs/help/troubleshooting.md` (decision tree + error signatures)
+- **Official docs:** https://docs.openclaw.ai/
+
+> **Note:** The local docs at `~/github/openclaw/docs/` are the source for `docs.openclaw.ai`. If you need deeper troubleshooting beyond this checklist, read the relevant markdown files there directly.

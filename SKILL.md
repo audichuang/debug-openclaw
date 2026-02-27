@@ -1,11 +1,11 @@
 ---
 name: debug-openclaw
-description: Debug OpenClaw session issues, gateway problems, and runtime errors. Use when troubleshooting why sessions aren't responding, gateway won't start, skills fail to load, browser automation breaks, channels disconnect, or model/auth configuration is incorrect. Provides architecture context and guides systematic investigation through config files, session logs, and source code.
+description: Debug and operate OpenClaw gateway, sessions, channels, models, and automation. Use this skill whenever anyone asks about OpenClaw—whether troubleshooting or running commands. Covers sessions not responding, bot not responding, "Slow listener detected", "DiscordMessageListener timed out after 30000ms", event queue/lane blocking, "FailoverError", "Unknown model", model fallback failures, channel disconnects, skill loading, "context_length_exceeded", doctor errors; AND operations like systemd service management, CLI commands, config changes, model auth, update/rollback.
 ---
 
-# Debug OpenClaw Session
+# Debug & Operate OpenClaw
 
-Guide for systematically investigating OpenClaw issues. This skill teaches you WHERE to look and WHAT to read — you analyze the content yourself.
+Comprehensive guide for investigating and operating OpenClaw. This skill teaches you WHERE to look, WHAT to read, and HOW to operate — covering both debugging and day-to-day operations.
 
 ## Investigation Flow
 
@@ -26,11 +26,38 @@ Read [references/architecture.md](references/architecture.md) for full details. 
 * **Pi-Embedded Runner** — The core engine that sends messages to AI providers and handles responses
 * **Skills** — Modular extensions loaded from SKILL.md files and injected into the system prompt
 
+## Quick Operations
+
+The most common commands you'll need. For full reference, read [references/cli-reference.md](references/cli-reference.md).
+
+```bash
+# Service management (Linux systemd)
+systemctl --user status openclaw-gateway      # Is it running?
+systemctl --user restart openclaw-gateway     # Restart after config change
+journalctl --user -u openclaw-gateway -n 20   # Recent logs
+
+# Fast log search (prefer over journalctl for large logs)
+tail -500 /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep -E "error|timeout|Slow"
+
+# Channel and model status
+openclaw channels status --probe              # Channel connectivity
+openclaw doctor                               # Full health check
+openclaw skills status                        # List loaded skills
+openclaw --version                            # Check installed version
+```
+
 ## Additional References
 
+* **CLI & Operations** — Read [references/cli-reference.md](references/cli-reference.md) for all CLI commands, gateway lifecycle, systemd service management, update/rollback, and a quick diagnostic cheatsheet.
 * **Config file formats** — Read [references/config-formats.md](references/config-formats.md) when you need to understand or modify `openclaw.json`, `models.json`, `sessions.json`, or session JSONL transcripts. Includes session key format patterns.
 * **Common operational tasks** — Read [references/common-tasks.md](references/common-tasks.md) for step-by-step guides: finding sessions by group name, tracing skill invocations, adding custom model providers, verifying model config, diagnosing channel issues, understanding agent bindings.
-* **Debug checklist** — Read [references/debug-checklist.md](references/debug-checklist.md) for symptom-based diagnosis (gateway won't start, session not responding, skill not loading, etc.).
+* **Debug checklist** — Read [references/debug-checklist.md](references/debug-checklist.md) for symptom-based diagnosis (gateway won't start, session not responding, skill not loading, channel disconnected, config issues, doctor errors).
+* **Lane & execution diagnostics** — Read [references/lane-diagnostics.md](references/lane-diagnostics.md) for event queue blocking, subagent lane blocking, model fallback failures, and diagnostic command benchmarks.
+* **Official docs (local source)** — The local repo at `~/github/openclaw/docs/` is the source for https://docs.openclaw.ai/. For deep troubleshooting:
+  * `help/troubleshooting.md` — Triage decision tree with error signatures
+  * `gateway/doctor.md` — All 19 doctor checks explained in detail
+  * `help/debugging.md` — Debug overrides, raw stream logging, watch mode
+  * `help/faq.md` — Comprehensive FAQ
 
 ## Where to Look by Problem Type
 
@@ -92,6 +119,25 @@ Read [references/architecture.md](references/architecture.md) for full details. 
 * `src/agents/auth-profiles/` — Auth profile rotation mechanism
 * `src/agents/models-config.providers.ts` — Provider endpoint/URL configuration
 * `src/agents/cli-credentials.ts` — Credential storage and retrieval
+
+---
+
+### Event Queue / Lane Issues
+
+**Goal: Understand why messages are being dropped or delayed across channels**
+
+| What to check | Where to find it |
+|----------------|-----------------|
+| Listener timeouts | `journalctl --user -u openclaw-gateway` — grep for `timed out\|Slow listener` |
+| Lane task duration | Same logs — grep for `lane task done\|lane task error` — shows which session is blocking and for how long |
+| Blocking channel ID | `lane task` log lines contain `lane=session:agent:main:discord:channel:<ID>` |
+| Session lookup | `jq '."agent:main:discord:channel:<ID>"' ~/.openclaw/agents/main/sessions/sessions.json` |
+| Active subagent runs | `~/.openclaw/subagents/runs.json` |
+| Subagent model config | `~/.openclaw/openclaw.json` → `agents.defaults.subagents.model` |
+| Model fallback config | `~/.openclaw/openclaw.json` → `agents.defaults.model.fallbacks` |
+| Running subagent processes | `ps -eo pid,etime,args \| grep -E "prep_funday\|notebooklm\|doppler"` |
+
+**Key insight:** OpenClaw's main lane is **serial** — one slow run blocks all channels. A 30-second listener timeout means dropped messages. See [references/lane-diagnostics.md](references/lane-diagnostics.md) for detailed diagnosis steps, command benchmarks, and resolution strategies.
 
 ---
 
@@ -222,21 +268,3 @@ Read [references/architecture.md](references/architecture.md) for full details. 
 * `src/config/defaults.ts` — Default config values
 * `src/config/validation.ts` — Config validation
 * `src/config/schema.ts` + `src/config/zod-schema.ts` — Full config schema
-
-## Useful CLI Commands
-
-These are NOT diagnostic scripts — they just help you see raw data:
-
-```bash
-# See gateway status
-openclaw channels status --probe
-
-# Run built-in diagnostic
-openclaw doctor
-
-# List loaded skills
-openclaw skills status
-
-# Check version
-openclaw --version
-```

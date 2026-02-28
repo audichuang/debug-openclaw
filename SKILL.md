@@ -63,7 +63,7 @@ openclaw --version                            # Check installed version
 
 ### Session Issues
 
-**Goal: Understand what happened in a conversation**
+**Goal: Understand what happened in a conversation or query conversation logs**
 
 | What to check | Where to find it |
 |----------------|-----------------|
@@ -72,17 +72,154 @@ openclaw --version                            # Check installed version
 | Session key mapping | Read `sessions.json` to find which `.jsonl` maps to which chat |
 | What agent ID to use | System prompt `Runtime` line contains `agent=<id>` |
 
-**How to read a session JSONL:**
+#### Session File Locations
 
-* Each line is a JSON object
-* `type: "session"` = session metadata (model, auth profile, timestamp)
-* `type: "message"` + `message.role: "user"` = user messages
-* `type: "message"` + `message.role: "assistant"` = AI responses
-* `message.content[].type: "toolCall"` = tool invocations
-* `message.content[].type: "toolResult"` = tool results (check `isError`)
-* `message.usage.cost.total` = cost per response
+| What | Path |
+|------|------|
+| Agent sessions dir | `~/.openclaw/agents/<agentId>/sessions/` |
+| Session index | `~/.openclaw/agents/<agentId>/sessions/sessions.json` |
+| Session transcript | `~/.openclaw/agents/<agentId>/sessions/<sessionId>.jsonl` |
 
-**Source code to read for deeper understanding:**
+**Session key format**: `agent:<agentId>:<channel>:<chatType>:<chatId>`
+- Example: `agent:main:telegram:group:-5142412129`
+- Example: `agent:main:discord:channel:123456789`
+
+#### Find Session ID from Session Key
+
+```bash
+# From session key to session file
+jq '."agent:main:telegram:group:-5142412129".sessionId' \
+  ~/.openclaw/agents/main/sessions/sessions.json
+
+# Full path result
+jq -r '."agent:main:telegram:group:-5142412129".sessionFile' \
+  ~/.openclaw/agents/main/sessions/sessions.json
+```
+
+#### Session JSONL Structure
+
+Each line is a JSON object:
+- `type: "session"` — Session metadata (model, provider, timestamp)
+- `type: "message"` + `message.role: "user"` — User messages
+- `type: "message"` + `message.role: "assistant"` — AI responses
+- `message.content[].type: "toolCall"` — Tool invocations
+- `message.content[].type: "toolResult"` — Tool results (check `isError` field)
+- `message.usage.cost.total` — Cost per response
+
+#### Quick Query Commands
+
+**Use the session_query.py script** (recommended):
+
+```bash
+# Session summary (model, stats, time range)
+python3 ~/skills/debug-openclaw/scripts/session_query.py <session_id> --summary
+
+# Session key lookup
+python3 ~/skills/debug-openclaw/scripts/session_query.py --key "agent:main:telegram:group:-5142412129"
+
+# Last N messages (human-readable)
+python3 ~/skills/debug-openclaw/scripts/session_query.py <session_id> --tail 20
+
+# Show only errors
+python3 ~/skills/debug-openclaw/scripts/session_query.py <session_id> --errors
+
+# Tool usage breakdown
+python3 ~/skills/debug-openclaw/scripts/session_query.py <session_id> --tools
+
+# Search for keyword
+python3 ~/skills/debug-openclaw/scripts/session_query.py <session_id> --search "keyword"
+```
+
+**Manual jq queries** (alternative):
+```bash
+# Last 20 messages, text only
+tail -20 ~/.openclaw/agents/main/sessions/<id>.jsonl | \
+  jq -r 'select(.type=="message") | .message.content[]? | select(.type=="text") | .text'
+
+# With role labels
+tail -50 ~/.openclaw/agents/main/sessions/<id>.jsonl | \
+  jq -r 'if .type == "message" then "[\(.message.role)] \(.message.content[0].text // .message.content[0].type)" elif .type == "session" then "[SESSION] \(.model) @ \(.provider)" else .type end'
+```
+
+**Extract specific content:**
+```bash
+# All user messages
+jq -r 'select(.message.role == "user") | .message.content[]? | select(.type == "text") | .text' \
+  ~/.openclaw/agents/main/sessions/<id>.jsonl
+
+# All assistant responses
+jq -r 'select(.message.role == "assistant") | .message.content[]? | select(.type == "text") | .text' \
+  ~/.openclaw/agents/main/sessions/<id>.jsonl
+
+# Tool calls only
+jq -r '.message.content[]? | select(.type == "toolCall") | .name' \
+  ~/.openclaw/agents/main/sessions/<id>.jsonl
+
+# Tool results (with errors highlighted)
+jq -c 'select(.type=="message" and .message.content[0].type=="toolResult") | 
+  {tool: .message.content[0].name, error: .message.content[0].isError}' \
+  ~/.openclaw/agents/main/sessions/<id>.jsonl
+```
+
+**Search across sessions:**
+```bash
+# Find sessions containing keyword
+rg -l "keyword" ~/.openclaw/agents/main/sessions/*.jsonl
+
+# Search in specific session
+rg -i "TRANSINO" ~/.openclaw/agents/main/sessions/<id>.jsonl
+
+# Fast text-only search
+jq -r 'select(.type=="message") | .message.content[]? | select(.type=="text") | .text' \
+  ~/.openclaw/agents/main/sessions/<id>.jsonl | rg "keyword"
+```
+
+**Session statistics:**
+```bash
+# Message counts and timing
+jq -s '{
+  messages: length,
+  user: [.[] | select(.message.role == "user")] | length,
+  assistant: [.[] | select(.message.role == "assistant")] | length,
+  first: .[0].timestamp,
+  last: .[-1].timestamp
+}' ~/.openclaw/agents/main/sessions/<id>.jsonl
+
+# Tool usage breakdown
+jq -r '.message.content[]? | select(.type == "toolCall") | .name' \
+  ~/.openclaw/agents/main/sessions/<id>.jsonl | sort | uniq -c | sort -rn
+
+# Total cost for a session
+jq -s '[.[] | .message.usage.cost.total // 0] | add' ~/.openclaw/agents/main/sessions/<id>.jsonl
+```
+
+**List sessions by date:**
+```bash
+# All sessions sorted by date and size
+for f in ~/.openclaw/agents/main/sessions/*.jsonl; do
+  date=$(head -1 "$f" | jq -r '.timestamp' | cut -dT -f1)
+  size=$(ls -lh "$f" | awk '{print $5}')
+  echo "$date $size $(basename $f)"
+done | sort -r
+
+# Find sessions from a specific day
+for f in ~/.openclaw/agents/main/sessions/*.jsonl; do
+  head -1 "$f" | jq -r '.timestamp' | grep -q "2026-02-28" && echo "$f"
+done
+```
+
+**Common debugging queries:**
+```bash
+# Find failed tool calls
+jq -c 'select(.type=="message" and .message.content[0].type=="toolResult" and .message.content[0].isError==true)' \
+  ~/.openclaw/agents/main/sessions/<id>.jsonl
+
+# Find all web_search queries
+jq -r 'select(.type=="message" and .message.content[0].type=="toolCall" and .message.content[0].name=="web_search") | 
+  .message.content[0].input.query' ~/.openclaw/agents/main/sessions/<id>.jsonl
+```
+
+#### Source code to read for deeper understanding:
 
 * `src/gateway/session-utils.ts` — Session resolution, store loading
 * `src/gateway/session-utils.fs.ts` — Session file I/O (read/write transcript)

@@ -197,6 +197,136 @@ Step-by-step guides for operational tasks that go beyond basic debugging.
 
 ***
 
+## Debug Auth Profile Rotation (Multi-Account)
+
+**Goal:** Diagnose why a second OAuth/API-key account isn't being used, or understand how profile rotation works.
+
+### How rotation actually works
+
+OpenClaw auth profile rotation is **session-scoped, not per-message**:
+
+* A session picks one profile and **sticks with it** until compaction happens
+* Rotation advances on: (1) new session created, (2) compaction triggered
+* The picked profile is stored as `authProfileOverride` in `sessions.json`
+* This is written by `src/agents/auth-profiles/session-override.ts` → `resolveSessionAuthProfileOverride()`
+
+Within a provider, the **round-robin order** (when no override is set) is:
+* Sorted by `lastUsed` oldest-first (never-used = 0 = always first)
+* OAuth > token > api_key type preference
+* Profiles in cooldown go to the end
+
+### Files to check
+
+| What | Where |
+|------|-------|
+| Profile credentials + tokens | `~/.openclaw/agents/main/agent/auth-profiles.json` |
+| Per-session profile pin | `~/.openclaw/agents/main/sessions/sessions.json` → `authProfileOverride` |
+| Profile order config | `~/.openclaw/openclaw.json` → `auth.profiles` |
+| Usage stats & cooldowns | `auth-profiles.json` → `usageStats` |
+| Last successful profile | `auth-profiles.json` → `lastGood` |
+
+### Step-by-step diagnosis
+
+**1. Check if the second profile is registered in both places:**
+
+```bash
+# Must appear in openclaw.json auth.profiles
+cat ~/.openclaw/openclaw.json | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+for k,v in d.get('auth',{}).get('profiles',{}).items():
+    print(k, '->', v.get('provider'), v.get('mode'))
+"
+
+# Must also have credentials in auth-profiles.json
+cat ~/.openclaw/agents/main/agent/auth-profiles.json | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+for k,v in d.get('profiles',{}).items():
+    print(k, '->', v.get('provider'), v.get('type'))
+"
+```
+
+If a profile exists in `auth-profiles.json` (credentials) but NOT in `openclaw.json` `auth.profiles` → **it will be ignored**.
+The rotation order is built from `openclaw.json` `auth.profiles` first; if that list has entries, `auth-profiles.json`-only entries are excluded.
+
+**2. Check the session's current override:**
+
+```bash
+python3 -c "
+import json
+d = json.load(open('/home/audichuang/.openclaw/agents/main/sessions/sessions.json'))
+key = 'agent:main:telegram:group:-XXXXXXXXX'  # replace with your session key
+e = d.get(key, {})
+print('authProfileOverride:', e.get('authProfileOverride'))
+print('authProfileOverrideSource:', e.get('authProfileOverrideSource'))
+print('compactionCount:', e.get('compactionCount'))
+"
+```
+
+If `authProfileOverride` is set and the session is NOT new / no compaction, it will keep using that profile.
+
+**3. Check usageStats to see which profiles were actually used:**
+
+```bash
+cat ~/.openclaw/agents/main/agent/auth-profiles.json | python3 -c "
+import json,sys,datetime
+d=json.load(sys.stdin)
+for k,v in d.get('usageStats',{}).items():
+    lu=v.get('lastUsed',0)
+    dt=datetime.datetime.fromtimestamp(lu/1000).strftime('%m-%d %H:%M:%S') if lu else 'never'
+    print(f'{k}: lastUsed={dt} errors={v.get(\"errorCount\",0)}')
+print()
+print('lastGood:', d.get('lastGood',{}))
+"
+```
+
+### Fix: force a session to switch to the new profile
+
+Clear the session's `authProfileOverride` so the next message re-evaluates round-robin (picks oldest lastUsed):
+
+```bash
+python3 -c "
+import json, time
+path = '/home/audichuang/.openclaw/agents/main/sessions/sessions.json'
+d = json.load(open(path))
+key = 'agent:main:telegram:group:-XXXXXXXXX'  # replace
+e = d[key]
+e.pop('authProfileOverride', None)
+e.pop('authProfileOverrideSource', None)
+e.pop('authProfileOverrideCompactionCount', None)
+e['updatedAt'] = int(time.time() * 1000)
+json.dump(d, open(path,'w'), indent=2, ensure_ascii=False)
+print('Cleared.')
+"
+```
+
+No gateway restart needed — `sessions.json` is read per-request.
+
+### Common pitfall: added second account AFTER session was already running
+
+1. Session was first created when only the old profile existed
+2. `authProfileOverride` was auto-set to the old profile
+3. Even after adding the new profile to `openclaw.json`, the session keeps the old override
+4. **Fix:** clear the override as above, then the next message picks the new profile
+
+### Important: runtime snapshot caching
+
+The gateway loads `auth-profiles.json` into an **in-memory snapshot** at startup via `activateSecretsRuntimeSnapshot()`.
+If you add a new profile to `openclaw.json` while the gateway is running, the log says:
+```
+config change requires gateway restart (auth.profiles.<new-profile>)
+```
+→ **A full gateway restart is required** for the new profile to enter the rotation.
+
+### Source code
+
+* `src/agents/auth-profiles/session-override.ts` → `resolveSessionAuthProfileOverride()` — reads/writes `authProfileOverride` in sessions.json
+* `src/agents/auth-profiles/order.ts` → `resolveAuthProfileOrder()` — builds the round-robin candidate list
+* `src/agents/auth-profiles/usage.ts` → `markAuthProfileUsed()` — updates `usageStats.lastUsed` after each use
+* `src/agents/auth-profiles/store.ts` → `ensureAuthProfileStore()` — loads store from runtime snapshot or disk
+* `src/secrets/runtime.ts` → `activateSecretsRuntimeSnapshot()` — sets in-memory auth store at gateway startup
+
+***
+
 ## Understand Agent Binding
 
 **Goal:** Understand how groups/channels are routed to specific agents.

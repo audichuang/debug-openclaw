@@ -236,7 +236,10 @@ jq -r 'select(.type=="message" and .message.content[0].type=="toolCall" and .mes
 |----------------|-----------------|
 | Main config | `~/.openclaw/openclaw.json` — look at `agents.<id>.model`, `agents.<id>.modelProvider` |
 | Model overrides | `~/.openclaw/models.json` (if exists) — custom provider/model definitions |
-| Auth profiles | Config `agents.<id>.authProfiles` — multiple API key rotation |
+| Auth profiles | `~/.openclaw/openclaw.json` → `auth.profiles` — profiles that enter the rotation |
+| Profile credentials | `~/.openclaw/agents/main/agent/auth-profiles.json` → `profiles` — actual tokens/keys |
+| Profile usage & cooldowns | `auth-profiles.json` → `usageStats` + `lastGood` |
+| Session profile pin | `~/.openclaw/agents/main/sessions/sessions.json` → `authProfileOverride` per session key |
 | Environment API keys | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY` etc. |
 | Credentials store | `~/.openclaw/credentials/` |
 | Session-level model info | In `.jsonl` first line: `type: "session"` contains active model |
@@ -253,9 +256,14 @@ jq -r 'select(.type=="message" and .message.content[0].type=="toolCall" and .mes
 * `src/agents/model-selection.ts` — How the model is chosen
 * `src/agents/model-auth.ts` — How auth is resolved for each request
 * `src/agents/model-fallback.ts` — Fallback logic on provider failure
-* `src/agents/auth-profiles/` — Auth profile rotation mechanism
+* `src/agents/auth-profiles/session-override.ts` → `resolveSessionAuthProfileOverride()` — session-level profile pin
+* `src/agents/auth-profiles/order.ts` → `resolveAuthProfileOrder()` — round-robin candidate list
+* `src/agents/auth-profiles/usage.ts` → `markAuthProfileUsed()` — lastUsed tracking
+* `src/agents/auth-profiles/store.ts` — runtime snapshot vs disk loading
 * `src/agents/models-config.providers.ts` — Provider endpoint/URL configuration
 * `src/agents/cli-credentials.ts` — Credential storage and retrieval
+
+**For multi-account rotation issues:** See [references/common-tasks.md](references/common-tasks.md#debug-auth-profile-rotation-multi-account)
 
 ---
 

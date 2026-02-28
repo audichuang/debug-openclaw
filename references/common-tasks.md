@@ -245,8 +245,12 @@ for k,v in d.get('profiles',{}).items():
 "
 ```
 
-If a profile exists in `auth-profiles.json` (credentials) but NOT in `openclaw.json` `auth.profiles` → **it will be ignored**.
-The rotation order is built from `openclaw.json` `auth.profiles` first; if that list has entries, `auth-profiles.json`-only entries are excluded.
+The rotation candidate list follows this logic (from `src/agents/auth-profiles/order.ts`):
+
+* If `openclaw.json` `auth.profiles` has **any entries for this provider** → only those profiles enter rotation; profiles in `auth-profiles.json` but not in `auth.profiles` are excluded.
+* If `openclaw.json` `auth.profiles` has **no entries for this provider** → all profiles from `auth-profiles.json` are used automatically.
+
+So if you have entries for `openai-codex` in `auth.profiles`, you must add every account there. If you have no entries at all for a provider, `auth-profiles.json` is the source of truth.
 
 **2. Check the session's current override:**
 

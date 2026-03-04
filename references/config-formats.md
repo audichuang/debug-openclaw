@@ -33,6 +33,7 @@ Detailed format reference for all configuration files. Read the relevant section
         "workspace": "/path",   // Workspace directory
         "model": "claude-sonnet-4-20250514",  // or { primary, fallbacks }
         "skills": ["debug-openclaw", "session-logs"],  // Allowlist (omit = all)
+        // Note: per-agent "model" overrides agents.defaults.model
         "identity": { "name": "Bot", "description": "..." },
         "groupChat": { /* group chat settings */ },
         "tools": { /* tool policies */ },
@@ -92,6 +93,11 @@ Detailed format reference for all configuration files. Read the relevant section
     "mode": "merge" | "replace",
     "providers": { /* same format as models.json providers */ }
   },
+
+  // Default agent model configuration (agents.defaults)
+  // agents.defaults.model.primary — the primary model
+  // agents.defaults.model.fallbacks — ordered fallback list
+  // agents.defaults.models — dict of all registered model IDs (keyed by provider/model)
 
   // Agent bindings — map channels/groups to specific agents
   "agentBindings": [
@@ -156,7 +162,8 @@ Use this to add custom providers (e.g., proxy, self-hosted, or alternative API e
 |-------|------|-------------|
 | `baseUrl` | string | API endpoint URL |
 | `apiKey` | string | API key (or env var reference) |
-| `api` | string | API protocol: `"openai-completions"`, `"anthropic-messages"`, `"google-generative-ai"`, `"ollama"` |
+| `api` | string | API protocol: `"openai-completions"`, `"openai-responses"`, `"anthropic-messages"`, `"google-generative-ai"`, `"github-copilot"`, `"ollama"`, `"bedrock-converse-stream"` |
+| `authHeader` | boolean | If `true`, sends API key via `Authorization: Bearer` header instead of provider-specific header |
 | `auth` | string | Auth mode: `"api-key"` (default), `"aws-sdk"`, `"oauth"`, `"token"` |
 | `headers` | object | Additional HTTP headers |
 | `models` | array | Model definitions (see below) |

@@ -13,6 +13,9 @@ openclaw dashboard            # Open dashboard URL
 openclaw config --list        # List all config values
 openclaw config --get <key>   # Get specific config value
 openclaw config --set <k=v>   # Set config value (avoids manual JSON editing)
+openclaw config validate      # Validate config files before gateway startup (3.2+)
+openclaw config validate --json  # Same, with JSON output
+openclaw config file          # Print active config file path (3.1+)
 openclaw update               # Update CLI to latest
 ```
 
@@ -95,10 +98,16 @@ openclaw channels logout --channel <name> # Disconnect a channel
 
 ```bash
 openclaw models list                          # Show available models
+openclaw models                               # Alias for list — shows full model + auth overview
+openclaw models status                        # Compact status (configured models, auth, OAuth status)
 openclaw models set <model>                   # Set default model
 openclaw models auth add --provider <name>    # Add provider auth (OAuth flow)
 openclaw models auth list                     # Show provider auth entries
 openclaw models auth remove --provider <name> # Remove provider auth
+openclaw models fallbacks list                # Show current fallback chain
+openclaw models fallbacks add <model>         # Add model to fallbacks (e.g. my-proxy/gpt-4o)
+openclaw models fallbacks remove <model>      # Remove model from fallbacks
+openclaw models fallbacks clear               # Clear all fallbacks
 openclaw models aliases list                  # List model aliases
 openclaw models aliases add <alias> <model>   # Create alias
 openclaw models scan                          # Discover local models (Ollama, etc.)
@@ -154,7 +163,10 @@ jq -r '."agent:main:discord:channel:<ID>" | {sessionId, groupChannel, model}' \
 # 6. What model/provider is a session using?
 tail -1 ~/.openclaw/agents/main/sessions/<sessionId>.jsonl | jq '{model: .model, provider: .modelProvider}'
 
-# 7. Full health check
+# 7. Validate config syntax
+openclaw config validate
+
+# 8. Full health check
 openclaw doctor
 ```
 

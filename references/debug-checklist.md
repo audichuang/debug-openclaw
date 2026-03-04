@@ -147,9 +147,13 @@ When investigating a specific symptom, go to the matching section. Each section 
 
 ## Config Not Taking Effect
 
+**Quick check (3.2+):** Run `openclaw config validate` first — it catches syntax errors and invalid keys before you dig deeper.
+
 **Read these files to understand:**
 
-1. Confirm which config file is actually loaded:
+1. Validate config syntax: `openclaw config validate --json` (3.2+)
+2. Confirm which config file is actually loaded:
+   * Run `openclaw config file` to see the resolved path (3.1+)
    * Check `OPENCLAW_CONFIG_PATH` env var — if set, this overrides everything
    * Check `OPENCLAW_STATE_DIR` — determines the state directory
    * Default: `~/.openclaw/openclaw.json`

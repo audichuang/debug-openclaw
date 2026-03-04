@@ -79,55 +79,157 @@ Step-by-step guides for operational tasks that go beyond basic debugging.
 
 ## Add a Custom Model Provider
 
-**Goal:** Configure a custom API endpoint (proxy, self-hosted model, etc.).
+**Goal:** Configure a custom API endpoint (proxy, self-hosted model, etc.) and make it available for use.
+
+> **Key insight:** Adding a provider alone is NOT enough. You must also register its models in `agents.defaults` for them to appear in `openclaw models` and be usable as fallbacks.
 
 ### Steps
 
-1. **Create or edit `~/.openclaw/models.json`:**
+**Step 1 — Define the provider** in `~/.openclaw/openclaw.json` → `models.providers`:
 
-```json
+```json5
 {
-  "mode": "merge",
-  "providers": {
-    "my-proxy": {
-      "baseUrl": "https://proxy.example.com/v1",
-      "apiKey": "sk-your-key",
-      "api": "openai-completions",
-      "models": [
-        {
-          "id": "gpt-4o",
-          "name": "GPT-4o via Proxy",
-          "reasoning": false,
-          "input": ["text", "image"],
-          "cost": { "input": 2.5, "output": 10, "cacheRead": 1.25, "cacheWrite": 2.5 },
-          "contextWindow": 128000,
-          "maxTokens": 16384
-        }
-      ]
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "my-proxy": {
+        "baseUrl": "https://proxy.example.com/v1",
+        "apiKey": "sk-your-key",
+        "api": "openai-completions",   // see API types table below
+        // "authHeader": true,         // set true if proxy expects Authorization header instead of x-api-key
+        "models": [
+          {
+            "id": "gpt-4o",
+            "name": "GPT-4o via Proxy",
+            "reasoning": false,
+            "input": ["text", "image"],
+            "cost": { "input": 2.5, "output": 10, "cacheRead": 1.25, "cacheWrite": 2.5 },
+            "contextWindow": 128000,
+            "maxTokens": 16384
+          }
+        ]
+      }
     }
   }
 }
 ```
 
-2. **Set the agent to use the custom provider:**
-   * Edit `~/.openclaw/openclaw.json` → `agents.list[].model`:
-   ```json5
-   "model": "my-proxy/gpt-4o"  // format: provider-name/model-id
-   ```
+> Alternatively, you can put this in a standalone `~/.openclaw/models.json` file (same `providers` format). The system merges both sources. See `src/agents/models-config.ts` → `ensureOpenClawModelsJson()`.
 
-3. **Verify:**
-   * Restart the gateway (or wait for hot-reload)
-   * Send a test message and check the session JSONL first line for `"model"` field
+**Step 2 — Register models as fallbacks** (otherwise they won't appear in `openclaw models`):
+
+```bash
+# CLI method (recommended — auto-updates both fallbacks and models dict):
+openclaw models fallbacks add my-proxy/gpt-4o
+
+# Or manually edit openclaw.json → agents.defaults.model.fallbacks:
+"agents": {
+  "defaults": {
+    "model": {
+      "primary": "openai-codex/gpt-5.2",
+      "fallbacks": [
+        "...",
+        "my-proxy/gpt-4o"       // ← add here
+      ]
+    },
+    "models": {
+      "...": {},
+      "my-proxy/gpt-4o": {}    // ← also add here
+    }
+  }
+}
+```
+
+> **Why two places?** `fallbacks` controls the fallback order; `models` dict registers the model as "configured" so the system recognises it. The CLI command `openclaw models fallbacks add` handles both automatically.
+
+**Step 3 — Set as primary model** (optional, if you want it as the default):
+
+```bash
+# CLI method:
+openclaw models set my-proxy/gpt-4o
+
+# Or edit openclaw.json → agents.defaults.model.primary
+# Or per-agent: agents.list[].model = "my-proxy/gpt-4o"
+```
+
+**Step 4 — Restart gateway and verify:**
+
+```bash
+# Restart (model config changes are hot-reloadable, but restart is safest)
+openclaw gateway restart
+
+# Quick verify — check that your models appear
+openclaw models                           # look for your provider in output
+openclaw models | grep my-proxy           # filter for your provider
+
+# Deep verify — send a test message and check the session JSONL first line for "model" field
+```
 
 ### Available API types
 
 | `api` value | Use for |
 |-------------|---------|
-| `"openai-completions"` | OpenAI-compatible APIs (most proxies) |
+| `"openai-completions"` | OpenAI-compatible chat completions APIs (most proxies) |
+| `"openai-responses"` | OpenAI Responses API (Codex, newer OpenAI models) |
 | `"anthropic-messages"` | Anthropic API and compatible proxies |
 | `"google-generative-ai"` | Google Gemini API |
+| `"github-copilot"` | GitHub Copilot API |
 | `"ollama"` | Local Ollama server |
 | `"bedrock-converse-stream"` | AWS Bedrock |
+
+### Provider config fields reference
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `baseUrl` | string | API endpoint URL |
+| `apiKey` | string | API key |
+| `api` | string | API protocol (see table above) |
+| `authHeader` | boolean | If `true`, sends API key as `Authorization: Bearer` header instead of provider-specific header (useful for some proxies) |
+| `headers` | object | Additional HTTP headers to send with requests |
+| `auth` | string | Auth mode: `"api-key"` (default), `"aws-sdk"`, `"oauth"`, `"token"` |
+| `models` | array | Model definitions (see `config-formats.md`) |
+
+### End-to-end example: adding an Anthropic-compatible proxy
+
+```bash
+# 1. Edit config to add provider
+python3 -c "
+import json
+path = '$HOME/.openclaw/openclaw.json'
+d = json.load(open(path))
+
+# Add provider
+d.setdefault('models', {}).setdefault('providers', {})['my-claude-proxy'] = {
+    'baseUrl': 'http://my-proxy:3000',
+    'apiKey': 'sk-my-key',
+    'api': 'anthropic-messages',
+    'models': [
+        {
+            'id': 'claude-sonnet-4-6',
+            'name': 'Claude Sonnet 4.6 (My Proxy)',
+            'reasoning': True,
+            'input': ['text', 'image'],
+            'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0},
+            'contextWindow': 200000,
+            'maxTokens': 16000
+        }
+    ]
+}
+
+# Register in fallbacks + models dict
+fb = d.setdefault('agents', {}).setdefault('defaults', {}).setdefault('model', {}).setdefault('fallbacks', [])
+if 'my-claude-proxy/claude-sonnet-4-6' not in fb:
+    fb.append('my-claude-proxy/claude-sonnet-4-6')
+d['agents']['defaults'].setdefault('models', {})['my-claude-proxy/claude-sonnet-4-6'] = {}
+
+json.dump(d, open(path, 'w'), indent=2, ensure_ascii=False)
+print('Done')
+"
+
+# 2. Restart and verify
+openclaw gateway restart
+openclaw models | grep my-claude-proxy
+```
 
 ### Troubleshooting custom providers
 
@@ -135,6 +237,7 @@ Step-by-step guides for operational tasks that go beyond basic debugging.
 * **Read `src/config/types.models.ts`** → `ModelProviderConfig` for all valid fields
 * Check if API key env var is set: provider name maps to `<PROVIDER_NAME>_API_KEY` env var
 * Read `src/agents/models-config.providers.ts` → `resolveEnvApiKeyVarName()` for exact mapping
+* **Model appears in auth but not in "Configured models"?** → You forgot Step 2 (register in fallbacks + models dict)
 
 ***
 
@@ -312,14 +415,15 @@ No gateway restart needed — `sessions.json` is read per-request.
 3. Even after adding the new profile to `openclaw.json`, the session keeps the old override
 4. **Fix:** clear the override as above, then the next message picks the new profile
 
-### Important: runtime snapshot caching
+### Important: config reload and gateway restart
 
-The gateway loads `auth-profiles.json` into an **in-memory snapshot** at startup via `activateSecretsRuntimeSnapshot()`.
-If you add a new profile to `openclaw.json` while the gateway is running, the log says:
+The gateway uses `ensureAuthProfileStore()` (in `src/agents/auth-profiles/store.ts`) to load auth profiles. If you add a new profile to `openclaw.json` `auth.profiles` while the gateway is running, the config reload handler detects the change and logs:
 ```
 config change requires gateway restart (auth.profiles.<new-profile>)
 ```
 → **A full gateway restart is required** for the new profile to enter the rotation.
+
+**Note:** if you only added credentials to `auth-profiles.json` (without touching `openclaw.json` `auth.profiles`), a restart may still be needed depending on whether the store was cached in memory at startup.
 
 ### Source code
 
@@ -327,7 +431,7 @@ config change requires gateway restart (auth.profiles.<new-profile>)
 * `src/agents/auth-profiles/order.ts` → `resolveAuthProfileOrder()` — builds the round-robin candidate list
 * `src/agents/auth-profiles/usage.ts` → `markAuthProfileUsed()` — updates `usageStats.lastUsed` after each use
 * `src/agents/auth-profiles/store.ts` → `ensureAuthProfileStore()` — loads store from runtime snapshot or disk
-* `src/secrets/runtime.ts` → `activateSecretsRuntimeSnapshot()` — sets in-memory auth store at gateway startup
+* `src/gateway/server-reload-handlers.ts` — detects auth config changes requiring gateway restart
 
 ***
 

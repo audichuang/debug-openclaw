@@ -15,6 +15,7 @@ When investigating a specific symptom, go to the matching section. Each section 
 * [Event Queue Blocking / Lane Congestion](#event-queue-blocking--lane-congestion)
 * [Subagent Blocking Main Lane](#subagent-blocking-main-lane)
 * [Model Fallback Not Working](#model-fallback-not-working)
+* [Telegram Group Messages Not Received (Silent Drop)](#telegram-group-messages-not-received-silent-drop)
 * [Doctor Errors and Warnings](#doctor-errors-and-warnings)
 
 ***
@@ -194,6 +195,151 @@ When investigating a specific symptom, go to the matching section. Each section 
 **Quick check:** Are fallbacks from multiple providers? Is each provider authenticated? Is each model ID registered?
 
 ➜ **Read [lane-diagnostics.md](lane-diagnostics.md#model-fallback-not-working)** for full misconfiguration patterns and diagnostic commands.
+
+***
+
+## Telegram Group Messages Not Received (Silent Drop)
+
+**Symptom:** Bot responds fine in DMs, but group messages are completely ignored. No error in logs — messages simply never appear. `pending_update_count` stays at 0.
+
+**Diagnosis order:**
+
+```bash
+# 1. Check if messages even reach the bot (Telegram API level)
+BOT_TOKEN=$(cat ~/.openclaw/openclaw.json | python3 -c "import sys,json; c=json.load(sys.stdin); print(c['channels']['telegram']['accounts']['main']['botToken'])")
+curl -s "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo"
+# pending_update_count: 0 + no log activity = Telegram is filtering BEFORE the bot
+
+# 2. Probe channel status
+openclaw channels status --probe
+# Look for: "privacy mode will block most group messages"
+# Look for: "groupPolicy is allowlist but groupAllowFrom is empty"
+
+# 3. Check logs for any incoming message events
+tail -200 /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep -E "telegram|lane|embedded run" | grep -v "starting provider"
+```
+
+**Root causes (in order of likelihood):**
+
+### 1. BotFather privacy mode enabled (Telegram API-level filter)
+
+Telegram bots have privacy mode **ON by default**. When enabled, group messages are filtered at the API level — `getUpdates` never receives them, so openclaw sees nothing. `pending_update_count` stays 0.
+
+**Fix:** In Telegram → `@BotFather` → `/mybots` → select bot → `Bot Settings` → `Group Privacy` → **Turn off**.
+Then **remove + re-add the bot to the group** (existing groups cache the old setting).
+
+⚠️ If you have multiple bots (multi-agent setup), each bot needs its own BotFather privacy setting. Disabling for one bot does NOT affect others.
+
+### 2. Missing explicit binding for the account
+
+Without an explicit binding, messages fall through to the default agent via fallback — this is fragile and can silently fail under group/policy evaluation.
+
+**Wrong:** No binding for `main` account (relying on fallback)
+**Correct:**
+```json
+{ "agentId": "main", "match": { "channel": "telegram", "accountId": "main" } }
+```
+
+For multi-agent setups, every `accountId` needs its own binding:
+```json
+"bindings": [
+  { "agentId": "english-class", "match": { "channel": "telegram", "accountId": "english" } },
+  { "agentId": "main",          "match": { "channel": "telegram", "accountId": "main" } }
+]
+```
+
+### 3. `groupAllowFrom` type mismatch (integer vs string)
+
+`allowFrom` uses strings, but `groupAllowFrom` may be misconfigured as integers. When openclaw compares the Telegram sender ID against `groupAllowFrom`, type mismatch causes silent drop.
+
+```json
+// WRONG — integer causes comparison failure in group context
+"groupAllowFrom": [817286113]
+
+// CORRECT — must be strings, same as allowFrom
+"groupAllowFrom": ["817286113"]
+```
+
+DMs use `allowFrom` (strings) which works; groups use `groupAllowFrom` (integers) which silently fails — this is why DMs work but groups don't.
+
+### 4. `groups` config missing from account
+
+Without a `groups` entry, the account may default to requiring mentions (not responding to unmentioned messages).
+
+Each account that needs to respond to group messages without mentions needs:
+```json
+"groups": {
+  "*": { "requireMention": false }
+}
+```
+
+### 5. `groupAllowFrom` empty (allowlist blocks everything)
+
+If `groupPolicy: "allowlist"` is set but `groupAllowFrom` is empty or missing, ALL group messages are silently dropped.
+
+```json
+// WRONG — allowlist with no entries = everything blocked
+"groupPolicy": "allowlist"
+// (groupAllowFrom missing or [])
+
+// CORRECT
+"groupPolicy": "allowlist",
+"groupAllowFrom": ["817286113"]
+```
+
+### 6. 409 Conflict — multiple bot instances polling same token
+
+If two gateway instances (or two processes) poll with the same bot token, Telegram terminates one session → messages dropped.
+
+```bash
+# Check for conflict errors
+grep -a "409\|Conflict\|getUpdates" /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | tail -10
+
+# Check for multiple gateway processes
+pgrep -a -f "openclaw-gateway"
+```
+
+**Fix:** Kill duplicate processes, restart once:
+```bash
+systemctl --user restart openclaw-gateway
+```
+
+---
+
+**Complete correct multi-agent Telegram config (reference):**
+
+```json
+"channels": {
+  "telegram": {
+    "enabled": true,
+    "defaultAccount": "main",
+    "accounts": {
+      "main": {
+        "botToken": "...",
+        "dmPolicy": "allowlist",
+        "allowFrom": ["817286113"],
+        "groupPolicy": "allowlist",
+        "groupAllowFrom": ["817286113"],
+        "groups": { "*": { "requireMention": false } },
+        "streaming": "off"
+      },
+      "english": {
+        "botToken": "...",
+        "dmPolicy": "allowlist",
+        "allowFrom": ["817286113"],
+        "groupPolicy": "allowlist",
+        "groupAllowFrom": ["817286113"],
+        "groups": { "*": { "requireMention": false } },
+        "streaming": "off"
+      }
+    }
+  }
+},
+"bindings": [
+  { "agentId": "english-class", "match": { "channel": "telegram", "accountId": "english" } },
+  { "agentId": "main",          "match": { "channel": "telegram", "accountId": "main" } }
+]
+```
 
 ***
 
